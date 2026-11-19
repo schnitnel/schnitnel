@@ -3,14 +3,13 @@
 (() => {
   'use strict';
 
-  const DEFAULTS = { myAsins: [], competitors: [], targeted: [] };
+  const DEFAULTS = { myAsins: [], myBrand: '', competitors: [] };
   const DETAIL_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
-  const DETAIL_VERSION = 2; // bump when parseProductPage reads new fields, so old details are read again
+  const DETAIL_VERSION = 3; // bump when parseProductPage reads new fields, so old details are read again
   const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
   const normKeyword = (s) => clean(s).toLowerCase();
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const politeDelay = () => sleep(2500 + Math.random() * 2500);
-  const upperSet = (list) => new Set((list || []).map((a) => a.toUpperCase()));
 
   function toNumber(raw) {
     if (!raw) return null;
@@ -134,6 +133,23 @@
   }
 
   // ---------- product page parsing ----------
+  // The grey line Amazon shows under the title (before "Visit the X Store").
+  // shortcut: reads text between #productTitle and #bylineInfo; if Amazon moves the byline, this returns ''.
+  function highlightsOf(doc) {
+    const title = doc.querySelector('#productTitle');
+    const stop = doc.querySelector('#bylineInfo');
+    if (!title || !stop) return '';
+    const parts = [];
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (title.contains(n) || stop.contains(n) || n.parentElement.closest('script, style, noscript')) continue;
+      const afterTitle = title.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING;
+      const beforeStop = stop.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_PRECEDING;
+      if (afterTitle && beforeStop && clean(n.textContent)) parts.push(clean(n.textContent));
+    }
+    return clean(parts.join(' ')).slice(0, 600);
+  }
+
   function parseProductPage(doc) {
     const byline = clean(doc.querySelector('#bylineInfo')?.textContent);
     const brand = byline.replace(/^Visit the\s+/i, '').replace(/\s+Store$/i, '').replace(/^Brand:\s*/i, '');
@@ -148,11 +164,7 @@
     }
     const bsr = [...bsrText.matchAll(/#\s?([\d,]+)\s+in\s+([^#(]+?)(?=\s*\(|\s*#|$)/g)]
       .map((m) => ({ rank: parseInt(m[1].replace(/,/g, ''), 10), category: clean(m[2]) }));
-    // "Product highlights" table near the title, e.g. "Brand: X", "Material: Paper".
-    const highlights = [...doc.querySelectorAll('#productOverview_feature_div tr')]
-      .map((tr) => [...tr.querySelectorAll('td')].map((td) => clean(td.textContent)))
-      .filter((cells) => cells.length >= 2 && cells[0])
-      .map(([k, v]) => `${k}: ${v}`);
+    const breadcrumb = leafTexts(doc, '#wayfinding-breadcrumbs_feature_div li a, #wayfinding-breadcrumbs_container li a').filter(Boolean);
     const ratingText = doc.querySelector('#acrPopover')?.getAttribute('title') || doc.querySelector('#acrPopover .a-icon-alt')?.textContent || '';
     const ratingMatch = ratingText.match(/(\d(?:[.,]\d)?) out of 5/);
     const topReviews = [...doc.querySelectorAll('[data-hook="review"]')].slice(0, 5).map((r) => {
@@ -164,7 +176,8 @@
     return {
       title: clean(doc.querySelector('#productTitle')?.textContent),
       brand: clean(brand),
-      highlights,
+      highlights: highlightsOf(doc),
+      breadcrumb,
       bullets: [...new Set(bullets)],
       description,
       bsr,
@@ -196,9 +209,9 @@
       .srt-label{position:absolute;top:6px;left:6px;z-index:50;font:600 12px/1.2 Arial,sans-serif;
         padding:3px 7px;border-radius:4px;color:#fff;pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,.3)}
       .srt-organic{background:#1a7f37}.srt-sponsored{background:#b35900}
-      .srt-mine{outline:3px solid #6f42c1 !important;outline-offset:-3px}
+      .srt-mine{outline:4px solid #6f42c1 !important;outline-offset:-4px;box-shadow:inset 0 0 0 9999px rgba(111,66,193,.10) !important}
       .srt-mine .srt-label{background:#6f42c1}
-      .srt-comp{outline:3px dashed #cf222e !important;outline-offset:-3px}
+      .srt-label.srt-flag{background:#cf222e}
       #srt-panel{position:fixed;right:16px;bottom:16px;z-index:2147483646;background:#fff;color:#111;
         font:13px/1.4 Arial,sans-serif;border:1px solid #ccc;border-radius:8px;padding:10px 12px;
         box-shadow:0 4px 16px rgba(0,0,0,.18);max-width:320px}
@@ -209,18 +222,18 @@
     document.head.appendChild(style);
   }
 
-  function labelResults(results, settings) {
-    const mine = upperSet(settings.myAsins);
-    const comps = upperSet(settings.competitors);
-    const targeted = upperSet(settings.targeted);
+  function labelResults(results, settings, products) {
     for (const { node, data } of results) {
+      const brand = (products[data.asin] || {}).brand || data.brand;
+      const mine = srtIsMine(data.asin, brand, settings);
+      const flag = srtNotTargeted(data, brand, settings);
       node.querySelectorAll(':scope .srt-label').forEach((e) => e.remove());
-      node.classList.toggle('srt-mine', mine.has(data.asin));
-      node.classList.toggle('srt-comp', comps.has(data.asin));
+      node.classList.toggle('srt-mine', mine);
       const label = document.createElement('div');
-      label.className = `srt-label srt-${data.type}`;
-      let text = `${data.type === 'organic' ? 'Org' : 'Ad'} #${data.rank} · pos ${data.position}`;
-      if (comps.has(data.asin)) text += targeted.has(data.asin) ? ' · competitor, targeted' : ' · competitor, NOT targeted';
+      label.className = `srt-label srt-${data.type}${flag ? ' srt-flag' : ''}`;
+      let text = `${mine ? 'YOURS · ' : ''}${data.type === 'organic' ? 'Org' : 'Ad'} #${data.rank} · pos ${data.position}`;
+      if (flag) text += ' · NOT targeted';
+      else if (!mine && (settings.competitors || []).includes(data.asin)) text += ' · targeted';
       label.textContent = text;
       if (getComputedStyle(node).position === 'static') node.style.position = 'relative';
       node.appendChild(label);
@@ -281,14 +294,13 @@
 
   // Labels the results you are looking at. Nothing is saved; only a scan saves data.
   async function label() {
-    const { settings } = await getAll();
+    const { settings, products } = await getAll();
     const serp = parseSerp(document, location.href);
     if (!serp.keyword || serp.results.length === 0) return;
 
     injectStyles();
-    labelResults(serp.results, settings);
-    const mine = upperSet(settings.myAsins);
-    const myBest = serp.results.find((r) => r.data.type === 'organic' && mine.has(r.data.asin));
+    labelResults(serp.results, settings, products);
+    const myBest = serp.results.find((r) => r.data.type === 'organic' && srtIsMine(r.data.asin, (products[r.data.asin] || {}).brand || r.data.brand, settings));
 
     const organic = serp.results.filter((r) => r.data.type === 'organic').length;
     setPanel([

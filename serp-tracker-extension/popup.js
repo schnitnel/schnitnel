@@ -1,6 +1,7 @@
 'use strict';
 
-const DEFAULTS = { myAsins: [], competitors: [], targeted: [] };
+const DEFAULTS = { myAsins: [], myBrand: '', competitors: [] };
+const SHARE_MIN = 0.05; // brands below 5% of a page's slots are left out of the share chart
 const SERP_URL = /^https:\/\/www\.amazon\.(com|ca|co\.uk|com\.mx)\/s\?/;
 const $ = (id) => document.getElementById(id);
 const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
@@ -11,10 +12,10 @@ const fmtDateTime = (ts) => new Date(ts).toLocaleString([], { month: 'short', da
 const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
 const isToday = (ts) => sameDay(ts, Date.now());
 const asinList = (text) => [...new Set(text.toUpperCase().split(/[\s,;]+/).filter((a) => /^[A-Z0-9]{10}$/.test(a)))];
-const upperSet = (list) => new Set((list || []).map((a) => a.toUpperCase()));
 
 let state = { snapshots: [], products: {}, settings: { ...DEFAULTS } };
 let currentKeyword = null;
+let chartPage = 0;
 
 async function load() {
   const s = await chrome.storage.local.get(['snapshots', 'products', 'settings']);
@@ -59,13 +60,13 @@ function fillTable(table, headers, rows) {
 // ---------- shared lookups ----------
 const brandOf = (r) => clean((state.products[r.asin] || {}).brand || r.brand);
 const titleOf = (r) => (state.products[r.asin] || {}).title || r.title;
-const sets = () => ({ mine: upperSet(state.settings.myAsins), comps: upperSet(state.settings.competitors), targeted: upperSet(state.settings.targeted) });
+const isMine = (r) => srtIsMine(r.asin, brandOf(r), state.settings);
+const notTargeted = (r) => srtNotTargeted(r, brandOf(r), state.settings);
 
-function flagOf(asin, s) {
-  if (s.mine.has(asin)) return { text: 'Yours', cls: 'mine' };
-  if (s.comps.has(asin)) return s.targeted.has(asin)
-    ? { text: 'Competitor · targeted', cls: 'comp' }
-    : { text: 'Competitor · NOT targeted', cls: 'comp' };
+function flagOf(r) {
+  if (isMine(r)) return { text: 'Yours', cls: 'mine' };
+  if (notTargeted(r)) return { text: '⚠ Not targeted', cls: 'comp' };
+  if (state.settings.competitors.includes(r.asin)) return { text: 'Targeted', cls: '' };
   return { text: '', cls: '' };
 }
 
@@ -87,15 +88,12 @@ function combined(keyword) {
   return { latest, pages, organic, sponsored };
 }
 
-function untargetedOn(c, s) {
-  if (!c) return [];
-  return [...new Set([...c.organic, ...c.sponsored].map((r) => r.asin))]
-    .filter((a) => s.comps.has(a) && !s.targeted.has(a));
+function untargetedOn(c) {
+  return [...new Set(c.organic.filter(notTargeted).map((r) => r.asin))];
 }
 
 // ---------- keywords ----------
 function renderKeywords() {
-  const s = sets();
   const filter = normKeyword($('kwFilter').value);
   const byKw = new Map();
   for (const snap of state.snapshots) {
@@ -110,8 +108,8 @@ function renderKeywords() {
     .filter((r) => !filter || r.keyword.includes(filter))
     .forEach((r) => {
       const c = combined(r.keyword);
-      const best = c.organic.find((x) => s.mine.has(x.asin));
-      const untargeted = untargetedOn(c, s).length;
+      const best = c.organic.find(isMine);
+      const untargeted = untargetedOn(c).length;
       const tr = el('tr');
       [[r.keyword], [String(r.today), 'num'], [fmtDateTime(r.last.ts)],
         [best ? `#${best.overall}` : '', 'num'], [untargeted ? `⚠ ${untargeted}` : '', untargeted ? 'num warn' : 'num']]
@@ -122,32 +120,42 @@ function renderKeywords() {
   $('kwEmpty').hidden = state.snapshots.length > 0;
 }
 
+// Brands holding at least SHARE_MIN of a page's slots, biggest first. Results without a brand are left out.
+function majorBrands(snap) {
+  const counts = new Map();
+  for (const r of snap.results) {
+    const b = brandOf(r);
+    if (!b) continue;
+    const e = counts.get(b) || { organic: 0, sponsored: 0, mine: false };
+    e[r.type]++;
+    e.mine = e.mine || isMine(r);
+    counts.set(b, e);
+  }
+  const all = snap.results.length;
+  return [...counts.entries()].map(([brand, v]) => ({ brand, ...v, total: v.organic + v.sponsored }))
+    .filter((r) => r.total / all >= SHARE_MIN)
+    .sort((a, b) => b.total - a.total || a.brand.localeCompare(b.brand));
+}
+
 function renderBrandShare(c) {
   const chart = $('brandChart');
   chart.textContent = '';
-  const page1 = c.pages[0];
-  if (!page1) {
-    $('brandNote').textContent = 'Page 1 is not saved for this keyword yet.';
+  document.querySelectorAll('#pageSwitch button').forEach((b, i) => {
+    b.classList.toggle('on', i === chartPage);
+    b.disabled = !c.pages[i];
+  });
+  $('shareTitle').textContent = `Brand share of page ${chartPage + 1}`;
+  const snap = c.pages[chartPage];
+  if (!snap) {
+    $('brandNote').textContent = `Page ${chartPage + 1} is not saved for this keyword yet.`;
     return;
   }
-  const counts = new Map();
-  for (const r of page1.results) {
-    const b = brandOf(r) || 'Unknown brand';
-    const e = counts.get(b) || { organic: 0, sponsored: 0 };
-    e[r.type]++;
-    counts.set(b, e);
-  }
-  let rows = [...counts.entries()].map(([brand, v]) => ({ brand, ...v, total: v.organic + v.sponsored }))
-    .sort((a, b) => b.total - a.total || a.brand.localeCompare(b.brand));
-  if (rows.length > 10) {
-    const rest = rows.slice(9);
-    rows = [...rows.slice(0, 9), rest.reduce((a, r) => ({ brand: `Other (${rest.length} brands)`, organic: a.organic + r.organic, sponsored: a.sponsored + r.sponsored, total: a.total + r.total }), { organic: 0, sponsored: 0, total: 0 })];
-  }
-  const all = page1.results.length;
-  const max = Math.max(...rows.map((r) => r.total));
+  const rows = majorBrands(snap);
+  const all = snap.results.length;
+  const max = Math.max(1, ...rows.map((r) => r.total));
   for (const r of rows) {
     const row = el('div', null, 'brow');
-    const name = el('div', r.brand, 'bname');
+    const name = el('div', r.mine ? `${r.brand} (you)` : r.brand, r.mine ? 'bname mine' : 'bname');
     name.title = r.brand;
     const track = el('div', null, 'btrack');
     const bar = el('div', null, 'bar');
@@ -155,25 +163,24 @@ function renderBrandShare(c) {
       if (!r[type]) continue;
       const seg = el('div', null, `seg ${type}`);
       seg.style.width = `${(r[type] / max) * 300}px`;
-      seg.title = `${r.brand}: ${r[type]} ${type} slot${r[type] === 1 ? '' : 's'} on page 1`;
+      seg.title = `${r.brand}: ${r[type]} ${type} slot${r[type] === 1 ? '' : 's'} on page ${chartPage + 1}`;
       bar.appendChild(seg);
     }
     track.append(bar, el('span', `${Math.round((r.total / all) * 100)}% · ${r.organic} org · ${r.sponsored} ad`, 'bval'));
     row.append(name, track);
     chart.appendChild(row);
   }
-  const unknown = page1.results.filter((r) => !brandOf(r)).length;
-  $('brandNote').textContent = unknown
-    ? `${unknown} of ${all} page-1 results have no brand yet. Click "Scan pages 1–3 + details" on this search to read their product pages.`
-    : `${all} slots on page 1, saved ${fmtDateTime(page1.ts)}.`;
+  $('brandNote').textContent = `Brands with at least ${SHARE_MIN * 100}% of the ${all} slots on page ${chartPage + 1}, saved ${fmtDateTime(snap.ts)}.`;
 }
 
 function renderEstate(c) {
+  const major = new Set(c.pages.filter(Boolean).flatMap((snap) => majorBrands(snap).map((r) => r.brand)));
   const per = new Map();
   c.pages.forEach((snap, i) => {
     if (!snap) return;
     for (const r of snap.results) {
-      const b = brandOf(r) || 'Unknown brand';
+      const b = brandOf(r);
+      if (!major.has(b)) continue;
       const e = per.get(b) || [new Set(), new Set(), new Set()];
       e[i].add(r.asin);
       per.set(b, e);
@@ -186,23 +193,23 @@ function renderEstate(c) {
     rows.map((r) => ({ cells: [r.b, ...r.n.map(String), String(r.total)] })));
 }
 
-function renderTop30(table, list, s) {
+function renderTop30(table, list) {
   const top = list.slice(0, 30);
   fillTable(table, [['#', 'num'], ['Page', 'num'], ['ASIN'], ['Brand'], ['Flag']], top.map((r) => {
-    const f = flagOf(r.asin, s);
+    const f = flagOf(r);
     return { cells: [String(r.overall), String(r.page), r.asin, brandOf(r), f.text], cls: f.cls, title: titleOf(r) };
   }));
   table.querySelectorAll('tbody tr').forEach((tr, i) => { tr.onclick = () => showProduct(top[i]); });
   if (!list.length) table.appendChild(el('caption', 'No results saved.', 'muted'));
 }
 
-function renderHistory(keyword, s) {
+function renderHistory(keyword) {
   const today = state.snapshots.filter((x) => x.keyword === keyword && isToday(x.ts)).sort((a, b) => a.ts - b.ts);
   const offsetOf = srtOffsetFinder(state.snapshots);
-  const seen = [...new Set(today.flatMap((x) => x.results.filter((r) => s.mine.has(r.asin)).map((r) => r.asin)))];
+  const seen = [...new Set(today.flatMap((x) => x.results.filter(isMine).map((r) => r.asin)))];
   const wrap = $('historyWrap');
   wrap.textContent = '';
-  if (!s.mine.size) { wrap.appendChild(el('p', 'Add your ASINs in Settings to see how their rank moves during the day.', 'muted')); return; }
+  if (!state.settings.myAsins.length && !state.settings.myBrand) { wrap.appendChild(el('p', 'Add your brand name or ASINs in Settings to see how their rank moves during the day.', 'muted')); return; }
   if (!seen.length) { wrap.appendChild(el('p', "None of your ASINs showed up in today's saves for this keyword.", 'muted')); return; }
   const t = el('table', null, 'hist');
   fillTable(t, [['Time'], ['Page', 'num'], ...seen.map((a) => [a])], today.map((x) => {
@@ -220,8 +227,8 @@ function renderHistory(keyword, s) {
 }
 
 function showDetail(keyword) {
-  const s = sets();
   const c = combined(keyword);
+  if (keyword !== currentKeyword) chartPage = 0;
   currentKeyword = keyword;
   $('productBox').hidden = true;
   $('kwList').hidden = true;
@@ -232,22 +239,24 @@ function showDetail(keyword) {
     `pages saved: ${c.pages.map((p, i) => (p ? i + 1 : null)).filter(Boolean).join(', ') || 'none of 1–3'}`,
     c.latest.totalResultsText,
   ].filter(Boolean).join(' · ');
-  const untargeted = untargetedOn(c, s);
+  const untargeted = untargetedOn(c);
   const box = $('actionBox');
   box.textContent = '';
   if (untargeted.length) {
     const a = el('div', null, 'action');
-    a.append(el('b', `Action: ${untargeted.length} competitor${untargeted.length === 1 ? '' : 's'} rank here but are not in your product targeting: `), document.createTextNode(untargeted.join(', ')));
+    a.append(el('b', `Action: ${untargeted.length} organic ASIN${untargeted.length === 1 ? '' : 's'} on pages 1–3 ${untargeted.length === 1 ? 'is' : 'are'} not in your target list: `), document.createTextNode(untargeted.join(', ')));
     box.appendChild(a);
+  } else if (!state.settings.competitors.length) {
+    box.appendChild(el('p', 'Paste your top 30 competitor ASINs under Top 30 to flag organic ASINs you are not targeting yet.', 'muted'));
   }
   renderBrandShare(c);
   renderEstate(c);
-  renderTop30($('topOrganic'), c.organic, s);
-  renderTop30($('topSponsored'), c.sponsored, s);
+  renderTop30($('topOrganic'), c.organic);
+  renderTop30($('topSponsored'), c.sponsored);
   const top = new Set([...c.organic.slice(0, 30), ...c.sponsored.slice(0, 30)].map((r) => r.asin));
   const missing = state.settings.competitors.filter((a) => !top.has(a));
-  $('notInTop').textContent = missing.length ? `Competitors not in this top 30: ${missing.join(', ')}` : '';
-  renderHistory(keyword, s);
+  $('notInTop').textContent = missing.length ? `Pasted ASINs not in this top 30: ${missing.join(', ')}` : '';
+  renderHistory(keyword);
 }
 
 function showProduct(r) {
@@ -262,19 +271,21 @@ function showProduct(r) {
     box.scrollIntoView({ block: 'nearest' });
     return;
   }
+  const node = srtNodeRank(p);
   const facts = [
     p.rating !== null && p.rating !== undefined ? `${p.rating} out of 5` : '',
     p.reviewCount ? `${fmtNum(p.reviewCount)} ratings` : '',
-    ...(p.bsr || []).map((b) => `#${fmtNum(b.rank)} in ${b.category}`),
+    node ? `#${fmtNum(node.rank)} in ${node.category}` : '',
   ].filter(Boolean).join(' · ');
   if (facts) box.appendChild(el('p', facts));
+  if ((p.breadcrumb || []).length) box.appendChild(el('p', p.breadcrumb.join(' › '), 'muted'));
   const list = (heading, items) => {
     if (!items || !items.length) return;
     box.appendChild(el('h4', heading));
     const ul = box.appendChild(el('ul'));
     items.forEach((t) => ul.appendChild(el('li', t)));
   };
-  list('Highlights', p.highlights);
+  if (srtHighlights(p)) { box.appendChild(el('h4', 'Highlights')); box.appendChild(el('p', srtHighlights(p))); }
   list('Bullets', p.bullets);
   if (p.description) { box.appendChild(el('h4', 'Description')); box.appendChild(el('p', p.description)); }
   if (p.reviewsSummary) { box.appendChild(el('h4', 'Customers say')); box.appendChild(el('p', p.reviewsSummary)); }
@@ -285,14 +296,14 @@ function showProduct(r) {
 
 // ---------- competitors ----------
 function competitorRows() {
-  const s = sets();
+  const listed = new Set(state.settings.competitors);
   const best = new Map();
   const keywords = [...new Set(state.snapshots.map((x) => x.keyword))];
   for (const kw of keywords) {
     const c = combined(kw);
     for (const [list, key] of [[c.organic, 'org'], [c.sponsored, 'ad']]) {
       for (const r of list) {
-        if (!s.comps.has(r.asin)) continue;
+        if (!listed.has(r.asin)) continue;
         const b = best.get(r.asin) || {};
         if (!b[key] || r.overall < b[key].rank) b[key] = { rank: r.overall, kw };
         b.result = b.result || r;
@@ -303,34 +314,27 @@ function competitorRows() {
   return state.settings.competitors.map((asin) => {
     const b = best.get(asin) || {};
     const p = state.products[asin] || {};
-    const isTargeted = s.targeted.has(asin);
     return {
       asin,
       brand: p.brand || (b.result && b.result.brand) || '',
       title: p.title || (b.result && b.result.title) || '',
       org: b.org,
       ad: b.ad,
-      isTargeted,
-      action: isTargeted ? '' : 'Add as product target',
     };
   });
 }
 
 function renderCompetitors() {
   $('competitors').value = state.settings.competitors.join('\n');
-  $('targeted').value = state.settings.targeted.join('\n');
   const fmt = (x) => (x ? `#${x.rank} · ${x.kw}` : 'not seen');
-  fillTable($('compTable'), [['ASIN'], ['Brand'], ['Best organic'], ['Best sponsored'], ['Targeted?'], ['Action']],
-    competitorRows().map((r) => ({
-      cells: [r.asin, r.brand, fmt(r.org), fmt(r.ad), r.isTargeted ? '✓ yes' : '⚠ no', r.action],
-      cls: r.isTargeted ? '' : 'comp',
-      title: r.title,
-    })));
+  fillTable($('compTable'), [['ASIN'], ['Brand'], ['Best organic'], ['Best sponsored']],
+    competitorRows().map((r) => ({ cells: [r.asin, r.brand, fmt(r.org), fmt(r.ad)], title: r.title })));
 }
 
 // ---------- settings ----------
 function renderSettings() {
   $('myAsins').value = state.settings.myAsins.join('\n');
+  $('myBrand').value = state.settings.myBrand;
   const n = state.snapshots.length;
   $('storageInfo').textContent = `${n.toLocaleString()} saved snapshot${n === 1 ? '' : 's'}, ${Object.keys(state.products).length.toLocaleString()} product pages read.`;
 }
@@ -352,6 +356,9 @@ document.querySelectorAll('nav button').forEach((b) => {
 });
 
 $('kwFilter').oninput = renderKeywords;
+document.querySelectorAll('#pageSwitch button').forEach((b, i) => {
+  b.onclick = () => { chartPage = i; renderBrandShare(combined(currentKeyword)); };
+});
 $('backBtn').onclick = () => { $('kwDetail').hidden = true; $('kwList').hidden = false; };
 
 async function sendToSerpTab(msg) {
@@ -381,22 +388,23 @@ $('exportBtn').onclick = () => {
 $('saveComps').onclick = async () => {
   const competitors = asinList($('competitors').value);
   if (competitors.length > 30) flash(`You pasted ${competitors.length} competitor ASINs; all are kept, but the list is meant for your top 30.`);
-  await saveSettings({ competitors, targeted: asinList($('targeted').value) });
+  await saveSettings({ competitors });
   if (currentKeyword && !$('kwDetail').hidden) showDetail(currentKeyword);
-  if (competitors.length <= 30) flash(`Saved ${competitors.length} competitors and ${state.settings.targeted.length} targeted ASINs.`);
+  if (competitors.length <= 30) flash(`Saved ${competitors.length} targeted ASINs. Organic ASINs not on the list are flagged.`);
 };
 
 $('copyUntargeted').onclick = async () => {
-  const list = competitorRows().filter((r) => !r.isTargeted).map((r) => r.asin);
-  if (!list.length) { flash('Every competitor is already targeted.'); return; }
+  const c = currentKeyword && combined(currentKeyword);
+  const list = c ? untargetedOn(c) : [];
+  if (!list.length) { flash('No untargeted organic ASINs on this keyword.'); return; }
   await navigator.clipboard.writeText(list.join('\n'));
   flash(`Copied ${list.length} untargeted ASINs. Paste them into a product-targeting campaign.`);
 };
 
 
 $('saveSettings').onclick = async () => {
-  await saveSettings({ myAsins: asinList($('myAsins').value) });
-  flash(`Settings saved. Tracking ${state.settings.myAsins.length} ASIN${state.settings.myAsins.length === 1 ? '' : 's'}.`);
+  await saveSettings({ myAsins: asinList($('myAsins').value), myBrand: clean($('myBrand').value) });
+  flash('Settings saved.');
 };
 
 $('clearDataBtn').onclick = async () => {

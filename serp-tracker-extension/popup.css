@@ -59,3 +59,13 @@ tr.comp td{background:#fff1f0}
 #productBox h4{color:var(--fg);font-size:13px;margin:8px 0 2px}
 #productBox ul{margin:2px 0;padding-left:18px}
 #productBox .ptitle{font-weight:600;margin:0 0 4px}
+
+.chart-head{display:flex;align-items:center;justify-content:space-between;margin-top:14px}
+.chart-head h3{margin:0}
+.seg-ctl{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg-ctl button{border:0;border-radius:0;background:var(--bg);padding:3px 10px;font-size:12px}
+.seg-ctl button+button{border-left:1px solid var(--line)}
+.seg-ctl button.on{background:var(--accent);color:#fff}
+.seg-ctl button:disabled{color:#afb8c1;cursor:default}
+.bname.mine{color:var(--purple);font-weight:600}
+input[type=text]{display:block;width:100%;margin-top:4px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;font:inherit}
