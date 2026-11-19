@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SERP Rank Tracker for Amazon",
-  "version": "1.1.0",
-  "description": "Records which ASINs rank on the Amazon search pages you open, organic and sponsored, with search volume from your own Amazon reports.",
+  "version": "1.2.0",
+  "description": "Records which ASINs rank on the Amazon search pages you open, organic and sponsored, with brand share, competitor targeting flags and product page details.",
   "permissions": ["storage", "unlimitedStorage", "activeTab"],
   "background": { "service_worker": "background.js" },
   "action": {
@@ -19,7 +19,7 @@
         "https://www.amazon.co.uk/s?*",
         "https://www.amazon.com.mx/s?*"
       ],
-      "js": ["content.js"],
+      "js": ["export.js", "content.js"],
       "run_at": "document_idle"
     }
   ]

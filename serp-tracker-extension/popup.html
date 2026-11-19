@@ -8,7 +8,6 @@
   <header>
     <h1>SERP Rank Tracker</h1>
     <div class="actions">
-      <button id="captureBtn">Save this page</button>
       <button id="scanBtn" class="primary" title="Reads search pages 1-3 for this keyword, then the product page of every ASIN on them (brand, bullets, description, BSR)">Scan pages 1–3 + details</button>
       <button id="exportBtn">Export CSV</button>
     </div>
@@ -18,7 +17,6 @@
   <nav>
     <button data-tab="keywords" class="active">Keywords</button>
     <button data-tab="competitors">Competitors</button>
-    <button data-tab="import">Search volume</button>
     <button data-tab="settings">Settings</button>
   </nav>
 
@@ -26,10 +24,10 @@
     <div id="kwList">
       <input id="kwFilter" type="search" placeholder="Filter keywords">
       <table>
-        <thead><tr><th>Keyword</th><th class="num">Est. daily searches</th><th class="num">Saves today</th><th>Last saved</th><th class="num">Your best rank</th><th class="num">Untargeted competitors</th></tr></thead>
+        <thead><tr><th>Keyword</th><th class="num">Saves today</th><th>Last saved</th><th class="num">Your best rank</th><th class="num">Untargeted competitors</th></tr></thead>
         <tbody id="kwBody"></tbody>
       </table>
-      <p id="kwEmpty" class="muted" hidden>Nothing saved yet. Open an Amazon search (for example "graduation cards") and the results are saved automatically. Click "Scan pages 1–3 + details" for brand share and product details.</p>
+      <p id="kwEmpty" class="muted" hidden>Nothing saved yet. Open an Amazon search (for example "graduation cards") and click "Scan pages 1–3 + details".</p>
     </div>
     <div id="kwDetail" hidden>
       <button id="backBtn" class="link">← All keywords</button>
@@ -47,9 +45,23 @@
 
       <h3>Top 30 for this keyword</h3>
       <div class="split">
+        <label>Competitor ASINs (up to 30, one per line)
+          <textarea id="competitors" rows="5" placeholder="B0XXXXXXXX"></textarea>
+        </label>
+        <label>ASINs you already target in PPC (product targeting)
+          <textarea id="targeted" rows="5" placeholder="Paste from your campaign report or bulk file"></textarea>
+        </label>
+      </div>
+      <button id="saveComps" class="primary">Save and flag</button>
+      <button id="copyUntargeted">Copy untargeted ASINs</button>
+      <p id="notInTop" class="muted"></p>
+      <p class="muted">Click a row to see its product page details.</p>
+      <div class="split">
         <div><h4>Organic</h4><div class="scroll"><table id="topOrganic"></table></div></div>
         <div><h4>Sponsored</h4><div class="scroll"><table id="topSponsored"></table></div></div>
       </div>
+
+      <div id="productBox" hidden></div>
 
       <h3>Your ASINs through the day</h3>
       <div id="historyWrap"></div>
@@ -57,54 +69,23 @@
   </section>
 
   <section id="tab-competitors" hidden>
-    <div class="split">
-      <label>Top competitor ASINs (up to 30, one per line)
-        <textarea id="competitors" rows="7" placeholder="B0XXXXXXXX"></textarea>
-      </label>
-      <label>ASINs you already target in PPC (product targeting)
-        <textarea id="targeted" rows="7" placeholder="Paste from your campaign report or bulk file"></textarea>
-      </label>
-    </div>
-    <button id="saveComps" class="primary">Save lists</button>
-    <button id="copyUntargeted">Copy untargeted ASINs</button>
-    <h3>Status</h3>
+    <p class="muted">Paste your competitor and targeted ASINs under <b>Top 30</b> in any keyword. This table shows them across all keywords.</p>
     <div class="scroll"><table id="compTable"></table></div>
     <p class="muted">Ranks come from your latest saves of pages 1–3 for each keyword. Competitors are outlined in red dashes on Amazon pages.</p>
   </section>
 
-  <section id="tab-import" hidden>
-    <p>Amazon does not show search volume on the search page. Import it from your own report:</p>
-    <ul class="muted">
-      <li><b>Search Query Performance</b> (Seller Central → Brands → Brand Analytics): uses the "Search Query Volume" column.</li>
-      <li><b>Any CSV</b> with a keyword column ("Search Query", "Search Term" or "Keyword") and a "Search Volume" column.</li>
-      <li>Brand Analytics "Search Frequency Rank" is kept too, but it is a rank, not a volume.</li>
-    </ul>
-    <label>The volume in this file covers
-      <select id="period">
-        <option value="weekly">one week</option>
-        <option value="monthly">one month</option>
-        <option value="daily">one day</option>
-      </select>
-    </label>
-    <input id="fileInput" type="file" accept=".csv,.tsv,.txt">
-    <p id="importMsg"></p>
-    <p class="muted">Daily searches = weekly volume ÷ 7 (or monthly ÷ 30). It is an average day, not a live count.</p>
-    <p id="volCount" class="muted"></p>
-    <button id="clearVolBtn">Remove imported volumes</button>
-  </section>
 
   <section id="tab-settings" hidden>
     <label>Your ASINs (one per line). They get a purple outline on the page and their rank history is tracked.
       <textarea id="myAsins" rows="6" placeholder="B0XXXXXXXX"></textarea>
     </label>
-    <label class="row"><input id="autoCapture" type="checkbox"> Save automatically when I open an Amazon search</label>
-    <label class="row">Save the same keyword and page at most every <input id="minInterval" type="number" min="0" max="1440"> minutes</label>
     <button id="saveSettings" class="primary">Save settings</button>
     <hr>
     <p id="storageInfo" class="muted"></p>
     <button id="clearDataBtn" class="danger">Delete all saved snapshots and product details</button>
   </section>
 
+  <script src="export.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

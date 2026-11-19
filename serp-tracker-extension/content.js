@@ -3,8 +3,9 @@
 (() => {
   'use strict';
 
-  const DEFAULTS = { autoCapture: true, minIntervalMin: 15, myAsins: [], competitors: [], targeted: [] };
+  const DEFAULTS = { myAsins: [], competitors: [], targeted: [] };
   const DETAIL_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+  const DETAIL_VERSION = 2; // bump when parseProductPage reads new fields, so old details are read again
   const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
   const normKeyword = (s) => clean(s).toLowerCase();
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -147,13 +148,32 @@
     }
     const bsr = [...bsrText.matchAll(/#\s?([\d,]+)\s+in\s+([^#(]+?)(?=\s*\(|\s*#|$)/g)]
       .map((m) => ({ rank: parseInt(m[1].replace(/,/g, ''), 10), category: clean(m[2]) }));
+    // "Product highlights" table near the title, e.g. "Brand: X", "Material: Paper".
+    const highlights = [...doc.querySelectorAll('#productOverview_feature_div tr')]
+      .map((tr) => [...tr.querySelectorAll('td')].map((td) => clean(td.textContent)))
+      .filter((cells) => cells.length >= 2 && cells[0])
+      .map(([k, v]) => `${k}: ${v}`);
+    const ratingText = doc.querySelector('#acrPopover')?.getAttribute('title') || doc.querySelector('#acrPopover .a-icon-alt')?.textContent || '';
+    const ratingMatch = ratingText.match(/(\d(?:[.,]\d)?) out of 5/);
+    const topReviews = [...doc.querySelectorAll('[data-hook="review"]')].slice(0, 5).map((r) => {
+      const stars = (clean(r.querySelector('[data-hook="review-star-rating"], [data-hook="cmps-review-star-rating"]')?.textContent).match(/^\d(?:[.,]\d)?/) || [''])[0];
+      const title = clean(r.querySelector('[data-hook="review-title"]')?.textContent).replace(/^\d(?:[.,]\d)? out of 5 stars\s*/, '');
+      const body = clean(r.querySelector('[data-hook="review-body"]')?.textContent).replace(/\s*Read more$/, '').slice(0, 500);
+      return { stars: stars ? parseFloat(stars.replace(',', '.')) : null, title, body };
+    }).filter((r) => r.title || r.body);
     return {
       title: clean(doc.querySelector('#productTitle')?.textContent),
       brand: clean(brand),
+      highlights,
       bullets: [...new Set(bullets)],
       description,
       bsr,
+      rating: ratingMatch ? parseFloat(ratingMatch[1].replace(',', '.')) : null,
+      reviewCount: toNumber(doc.querySelector('#acrCustomerReviewText')?.textContent),
+      reviewsSummary: clean(doc.querySelector('#product-summary p')?.textContent),
+      topReviews,
       fetchedAt: Date.now(),
+      v: DETAIL_VERSION,
     };
   }
 
@@ -183,7 +203,9 @@
         font:13px/1.4 Arial,sans-serif;border:1px solid #ccc;border-radius:8px;padding:10px 12px;
         box-shadow:0 4px 16px rgba(0,0,0,.18);max-width:320px}
       #srt-panel b{font-weight:700}#srt-panel .srt-muted{color:#666;font-size:12px}
-      #srt-panel .srt-x{float:right;cursor:pointer;color:#888;margin-left:8px}`;
+      #srt-panel .srt-x{float:right;cursor:pointer;color:#888;margin-left:8px}
+      #srt-panel .srt-btn{margin-top:8px;font:600 13px Arial,sans-serif;padding:6px 12px;border:0;border-radius:6px;
+        background:#0969da;color:#fff;cursor:pointer}`;
     document.head.appendChild(style);
   }
 
@@ -205,7 +227,7 @@
     }
   }
 
-  function setPanel(lines) {
+  function setPanel(lines, button) {
     let panel = document.getElementById('srt-panel');
     if (!panel) {
       panel = document.createElement('div');
@@ -227,15 +249,21 @@
       if (muted) div.className = 'srt-muted';
       panel.appendChild(div);
     }
+    if (button) {
+      const b = document.createElement('button');
+      b.className = 'srt-btn';
+      b.textContent = button.text;
+      b.onclick = button.onClick;
+      panel.appendChild(b);
+    }
   }
 
   // ---------- saving ----------
   async function getAll() {
-    const s = await chrome.storage.local.get(['settings', 'snapshots', 'volumes', 'products']);
+    const s = await chrome.storage.local.get(['settings', 'snapshots', 'products']);
     return {
       settings: { ...DEFAULTS, ...(s.settings || {}) },
       snapshots: s.snapshots || [],
-      volumes: s.volumes || {},
       products: s.products || {},
     };
   }
@@ -251,40 +279,25 @@
     };
   }
 
-  async function capture(manual) {
-    const { settings, snapshots, volumes } = await getAll();
+  // Labels the results you are looking at. Nothing is saved; only a scan saves data.
+  async function label() {
+    const { settings } = await getAll();
     const serp = parseSerp(document, location.href);
-    if (!serp.keyword || serp.results.length === 0) return { ok: false, reason: 'No search results found on this page.' };
+    if (!serp.keyword || serp.results.length === 0) return;
 
     injectStyles();
     labelResults(serp.results, settings);
     const mine = upperSet(settings.myAsins);
     const myBest = serp.results.find((r) => r.data.type === 'organic' && mine.has(r.data.asin));
-    const vol = volumes[serp.keyword];
 
-    const last = [...snapshots].reverse().find((s) =>
-      s.keyword === serp.keyword && s.page === serp.page && s.marketplace === serp.marketplace);
-    const minutesSince = last ? (Date.now() - last.ts) / 60000 : Infinity;
-    let status;
-    if (!manual && !settings.autoCapture) {
-      status = 'Auto-save is off. Use the toolbar button to save.';
-    } else if (!manual && minutesSince < settings.minIntervalMin) {
-      status = `Already saved ${Math.floor(minutesSince)} min ago (saves at most every ${settings.minIntervalMin} min).`;
-    } else {
-      snapshots.push(snapshotOf(serp));
-      await chrome.storage.local.set({ snapshots });
-      status = `Saved at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-    }
     const organic = serp.results.filter((r) => r.data.type === 'organic').length;
     setPanel([
       [`Keyword: ${serp.keyword} · page ${serp.page}`],
       [`${organic} organic · ${serp.results.length - organic} sponsored`],
-      [vol && vol.daily !== null ? `Est. daily searches: ${Math.round(vol.daily).toLocaleString()} (${vol.volume.toLocaleString()} ${vol.period})` : 'No search volume imported for this keyword', !vol],
       ...(myBest ? [[`Your best organic rank: #${myBest.data.rank}`]] : []),
-      [status, true],
+      ['Not saved. Use Scan pages 1–3 in the extension to save and download.', true],
     ]);
     try { chrome.runtime.sendMessage({ type: 'captured', myBestOrganic: myBest ? myBest.data.rank : null }); } catch (e) { /* no listener */ }
-    return { ok: true, status, keyword: serp.keyword, count: serp.results.length };
   }
 
   // Fetches search pages 1..pages for this keyword, then the product page of every ASIN on them. One request every 2.5-5 s, stops on a captcha.
@@ -294,6 +307,7 @@
     if (!keyword) return { ok: false, reason: 'Open an Amazon search results page first.' };
     injectStyles();
     const saved = [];
+    const scanStart = Date.now();
     try {
       for (let p = 1; p <= pages; p++) {
         setPanel([[`Scanning "${keyword}" page ${p} of ${pages}…`]]);
@@ -312,7 +326,7 @@
         const { products } = await getAll();
         // Page order, so a stopped scan still has page 1 complete. Details are reused for 7 days.
         const wanted = [...new Set(saved.flatMap((s) => s.results.map((r) => r.data.asin)))]
-          .filter((a) => !products[a] || Date.now() - products[a].fetchedAt > DETAIL_MAX_AGE_MS);
+          .filter((a) => !products[a] || products[a].v !== DETAIL_VERSION || Date.now() - products[a].fetchedAt > DETAIL_MAX_AGE_MS);
         for (const [i, asin] of wanted.entries()) {
           setPanel([[`Reading product details ${i + 1} of ${wanted.length} (${asin})…`], ['Keep this tab open.', true]]);
           await politeDelay();
@@ -325,7 +339,13 @@
       }
       const msg = `Saved ${saved.length} page${saved.length === 1 ? '' : 's'} for "${keyword}"` +
         (withDetails ? `, read ${fetched} product page${fetched === 1 ? '' : 's'}.` : '.');
-      setPanel([[msg], ['Open the extension to see brand share and top 30.', true]]);
+      const download = async () => {
+        const data = await getAll();
+        const rows = data.snapshots.filter((s) => s.ts >= scanStart && s.keyword === keyword);
+        const name = `amazon-serp-${keyword.replace(/[^a-z0-9]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.csv`;
+        srtDownloadCsv(srtBuildCsv(rows, data), name);
+      };
+      setPanel([[msg], ['Open the extension for brand share and top 30.', true]], { text: 'Download CSV', onClick: download });
       return { ok: true, message: msg };
     } catch (e) {
       setPanel([[`Stopped: ${e.message}`], [`${saved.length} page(s) were saved before it stopped.`, true]]);
@@ -335,10 +355,6 @@
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg) return false;
-    if (msg.type === 'capture') {
-      capture(true).then(sendResponse, (e) => sendResponse({ ok: false, reason: String(e) }));
-      return true;
-    }
     if (msg.type === 'scan') {
       // Reply at once: the scan outlives the popup. Progress shows in the on-page box.
       scan(msg.pages || 3, !!msg.withDetails);
@@ -355,7 +371,7 @@
     const hasResults = document.querySelector('div[data-component-type="s-search-result"][data-asin]');
     if (!hasResults && attempt < 10) { setTimeout(() => tick(attempt + 1), 800); return; }
     lastUrl = location.href;
-    await capture(false);
+    await label();
   }
   tick();
   setInterval(() => {

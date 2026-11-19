@@ -53,3 +53,9 @@ h4{font-size:12px;margin:0 0 4px;color:var(--muted)}
 .ok{color:var(--green)}
 tr.comp td{background:#fff1f0}
 .action{margin:8px 0;padding:8px 10px;border-radius:6px;background:#fff1f0;border:1px solid #ffcecb}
+#topOrganic tbody tr,#topSponsored tbody tr{cursor:pointer}
+#topOrganic tbody tr:hover td,#topSponsored tbody tr:hover td{background:var(--soft)}
+#productBox{margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:6px}
+#productBox h4{color:var(--fg);font-size:13px;margin:8px 0 2px}
+#productBox ul{margin:2px 0;padding-left:18px}
+#productBox .ptitle{font-weight:600;margin:0 0 4px}
