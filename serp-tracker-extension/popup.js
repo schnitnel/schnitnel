@@ -1,7 +1,7 @@
 'use strict';
 
 const DEFAULTS = { myAsins: [], myBrand: '', competitors: [] };
-const SHARE_MIN = 0.05; // brands below 5% of a page's slots are left out of the share chart
+const TOP_BRANDS = 10; // competitor brands drawn as bars per page; the rest are listed under the chart
 const SERP_URL = /^https:\/\/www\.amazon\.(com|ca|co\.uk|com\.mx)\/s\?/;
 const $ = (id) => document.getElementById(id);
 const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
@@ -61,12 +61,13 @@ function fillTable(table, headers, rows) {
 const brandOf = (r) => clean((state.products[r.asin] || {}).brand || r.brand);
 const titleOf = (r) => (state.products[r.asin] || {}).title || r.title;
 const isMine = (r) => srtIsMine(r.asin, brandOf(r), state.settings);
-const notTargeted = (r) => srtNotTargeted(r, brandOf(r), state.settings);
+const notTargeted = (r) => srtNotTargeted(r, brandOf(r), state.settings, state.products);
 
 function flagOf(r) {
   if (isMine(r)) return { text: 'Yours', cls: 'mine' };
   if (notTargeted(r)) return { text: '⚠ Not targeted', cls: 'comp' };
   if (state.settings.competitors.includes(r.asin)) return { text: 'Targeted', cls: '' };
+  if (r.type === 'organic' && srtFamilyTargeted(r.asin, state.settings, state.products)) return { text: 'Targeted (variation)', cls: '' };
   return { text: '', cls: '' };
 }
 
@@ -120,22 +121,26 @@ function renderKeywords() {
   $('kwEmpty').hidden = state.snapshots.length > 0;
 }
 
-// Brands holding at least SHARE_MIN of a page's slots, biggest first. Results without a brand are left out.
-function majorBrands(snap) {
+// Per page: your brand plus the top 10 competitor brands as `top`; every other brand, and
+// results with no brand found, as `rest`.
+function brandSplit(snap) {
   const counts = new Map();
   for (const r of snap.results) {
-    const b = brandOf(r);
-    if (!b) continue;
+    const b = brandOf(r) || 'No brand found';
     const e = counts.get(b) || { organic: 0, sponsored: 0, mine: false };
     e[r.type]++;
     e.mine = e.mine || isMine(r);
     counts.set(b, e);
   }
-  const all = snap.results.length;
-  return [...counts.entries()].map(([brand, v]) => ({ brand, ...v, total: v.organic + v.sponsored }))
-    .filter((r) => r.total / all >= SHARE_MIN)
+  const rows = [...counts.entries()].map(([brand, v]) => ({ brand, ...v, total: v.organic + v.sponsored }))
     .sort((a, b) => b.total - a.total || a.brand.localeCompare(b.brand));
+  const known = rows.filter((r) => r.brand !== 'No brand found');
+  const top = [...known.filter((r) => r.mine), ...known.filter((r) => !r.mine).slice(0, TOP_BRANDS)]
+    .sort((a, b) => b.total - a.total);
+  return { top, rest: rows.filter((r) => !top.includes(r)) };
 }
+
+const shareText = (r, all) => `${Math.round((r.total / all) * 100)}% · ${r.organic} org · ${r.sponsored} ad`;
 
 function renderBrandShare(c) {
   const chart = $('brandChart');
@@ -150,7 +155,7 @@ function renderBrandShare(c) {
     $('brandNote').textContent = `Page ${chartPage + 1} is not saved for this keyword yet.`;
     return;
   }
-  const rows = majorBrands(snap);
+  const { top: rows, rest } = brandSplit(snap);
   const all = snap.results.length;
   const max = Math.max(1, ...rows.map((r) => r.total));
   for (const r of rows) {
@@ -166,15 +171,25 @@ function renderBrandShare(c) {
       seg.title = `${r.brand}: ${r[type]} ${type} slot${r[type] === 1 ? '' : 's'} on page ${chartPage + 1}`;
       bar.appendChild(seg);
     }
-    track.append(bar, el('span', `${Math.round((r.total / all) * 100)}% · ${r.organic} org · ${r.sponsored} ad`, 'bval'));
+    track.append(bar, el('span', shareText(r, all), 'bval'));
     row.append(name, track);
     chart.appendChild(row);
   }
-  $('brandNote').textContent = `Brands with at least ${SHARE_MIN * 100}% of the ${all} slots on page ${chartPage + 1}, saved ${fmtDateTime(snap.ts)}.`;
+  const others = $('otherBrands');
+  others.textContent = '';
+  if (rest.length) {
+    others.appendChild(el('h4', `Other brands on page ${chartPage + 1} (${rest.length})`));
+    const list = others.appendChild(el('ul', null, 'others'));
+    rest.forEach((r) => {
+      const li = list.appendChild(el('li'));
+      li.append(el('span', r.brand, 'oname'), el('span', shareText(r, all), 'oval'));
+    });
+  }
+  $('brandNote').textContent = `Share of the ${all} slots on page ${chartPage + 1}, saved ${fmtDateTime(snap.ts)}.`;
 }
 
 function renderEstate(c) {
-  const major = new Set(c.pages.filter(Boolean).flatMap((snap) => majorBrands(snap).map((r) => r.brand)));
+  const major = new Set(c.pages.filter(Boolean).flatMap((snap) => brandSplit(snap).top.map((r) => r.brand)));
   const per = new Map();
   c.pages.forEach((snap, i) => {
     if (!snap) return;

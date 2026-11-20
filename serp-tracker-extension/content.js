@@ -5,7 +5,7 @@
 
   const DEFAULTS = { myAsins: [], myBrand: '', competitors: [] };
   const DETAIL_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
-  const DETAIL_VERSION = 3; // bump when parseProductPage reads new fields, so old details are read again
+  const DETAIL_VERSION = 4; // bump when parseProductPage reads new fields, so old details are read again
   const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
   const normKeyword = (s) => clean(s).toLowerCase();
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -150,6 +150,21 @@
     return clean(parts.join(' ')).slice(0, 600);
   }
 
+  // Parent ASIN and sibling ASINs of the variation family.
+  // shortcut: reads Amazon's twister script data and swatches; if Amazon renames those, families come back empty.
+  function variationsOf(doc) {
+    const js = [...doc.querySelectorAll('script')].map((s) => s.textContent).join('\n');
+    const parentAsin = (js.match(/"parentAsin"\s*:\s*"([A-Z0-9]{10})"/) || [])[1] || '';
+    const map = (js.match(/"dimensionToAsinMap"\s*:\s*\{([^}]*)\}/) || [])[1] || '';
+    const asins = new Set(map.match(/\b[A-Z0-9]{10}\b/g) || []);
+    doc.querySelectorAll('#twister [data-defaultasin], #twister [data-asin], #twister_feature_div [data-asin], #inline-twister-expander-content [data-asin]')
+      .forEach((e) => {
+        const a = e.getAttribute('data-defaultasin') || e.getAttribute('data-asin');
+        if (/^[A-Z0-9]{10}$/.test(a || '')) asins.add(a);
+      });
+    return { parentAsin, variationAsins: [...asins] };
+  }
+
   function parseProductPage(doc) {
     const byline = clean(doc.querySelector('#bylineInfo')?.textContent);
     const brand = byline.replace(/^Visit the\s+/i, '').replace(/\s+Store$/i, '').replace(/^Brand:\s*/i, '');
@@ -178,6 +193,7 @@
       brand: clean(brand),
       highlights: highlightsOf(doc),
       breadcrumb,
+      ...variationsOf(doc),
       bullets: [...new Set(bullets)],
       description,
       bsr,
@@ -226,7 +242,7 @@
     for (const { node, data } of results) {
       const brand = (products[data.asin] || {}).brand || data.brand;
       const mine = srtIsMine(data.asin, brand, settings);
-      const flag = srtNotTargeted(data, brand, settings);
+      const flag = srtNotTargeted(data, brand, settings, products);
       node.querySelectorAll(':scope .srt-label').forEach((e) => e.remove());
       node.classList.toggle('srt-mine', mine);
       const label = document.createElement('div');
@@ -234,6 +250,7 @@
       let text = `${mine ? 'YOURS · ' : ''}${data.type === 'organic' ? 'Org' : 'Ad'} #${data.rank} · pos ${data.position}`;
       if (flag) text += ' · NOT targeted';
       else if (!mine && (settings.competitors || []).includes(data.asin)) text += ' · targeted';
+      else if (!mine && srtFamilyTargeted(data.asin, settings, products)) text += ' · targeted (variation)';
       label.textContent = text;
       if (getComputedStyle(node).position === 'static') node.style.position = 'relative';
       node.appendChild(label);

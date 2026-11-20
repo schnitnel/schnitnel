@@ -7,11 +7,22 @@ function srtIsMine(asin, brand, settings) {
   return (settings.myAsins || []).includes(asin) || (!!b && (brand || '').trim().toLowerCase() === b);
 }
 
-// Your pasted competitor list counts as already targeted. Flag organic results that are
-// neither yours nor on it. Sponsored results are never flagged. No list pasted = no flags.
-function srtNotTargeted(r, brand, settings) {
+// Your pasted competitor list counts as already targeted, and so does every other ASIN in
+// the same variation family (siblings or same parent, read from product pages).
+function srtFamilyTargeted(asin, settings, products) {
   const list = settings.competitors || [];
-  return list.length > 0 && r.type === 'organic' && !srtIsMine(r.asin, brand, settings) && !list.includes(r.asin);
+  if (list.includes(asin)) return true;
+  const p = products[asin] || {};
+  if ((p.variationAsins || []).some((a) => list.includes(a))) return true;
+  return !!p.parentAsin && list.some((a) => (products[a] || {}).parentAsin === p.parentAsin
+    || ((products[a] || {}).variationAsins || []).includes(asin));
+}
+
+// Flag organic results that are neither yours nor targeted. Sponsored results are never
+// flagged. No list pasted = no flags.
+function srtNotTargeted(r, brand, settings, products) {
+  return (settings.competitors || []).length > 0 && r.type === 'organic'
+    && !srtIsMine(r.asin, brand, settings) && !srtFamilyTargeted(r.asin, settings, products);
 }
 
 // Rank in the product's own browse node (last breadcrumb), not the top-level category.
@@ -52,12 +63,15 @@ function srtCsvCell(v) {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-// One row per result in `snapshots`; `data` holds { products, settings } from storage.
+const SRT_CSV_TOP = 40;
+
+// Organic results ranked 1-40 overall across pages 1-3, minus ASINs already targeted
+// directly or through their variation family. `data` holds { products, settings } from storage.
 function srtBuildCsv(snapshots, data) {
   const offsetOf = srtOffsetFinder(snapshots);
   const cols = ['date', 'time', 'marketplace', 'keyword', 'page', 'position',
-    'organic_rank_on_page', 'sponsored_rank_on_page', 'organic_rank_overall', 'sponsored_rank_overall',
-    'asin', 'brand', 'is_my_asin', 'in_target_list', 'action',
+    'organic_rank_on_page', 'organic_rank_overall',
+    'asin', 'parent_asin', 'brand', 'is_my_asin', 'action',
     'title', 'highlights', 'bullets', 'bsr_rank', 'bsr_category', 'browse_node', 'bsr_all',
     'price', 'rating', 'reviews', 'pdp_rating', 'pdp_review_count', 'reviews_summary', 'top_reviews',
     'bought_past_month', 'bought_past_month_text', 'badges', 'prime', 'total_results_text', 'details_read_at'];
@@ -67,18 +81,17 @@ function srtBuildCsv(snapshots, data) {
     const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const time = d.toTimeString().slice(0, 5);
     const off = offsetOf(snap);
+    if (!off) continue; // an earlier page is missing, so overall ranks are unknown
     for (const r of snap.results) {
+      const overall = off.org + r.rank;
+      if (r.type !== 'organic' || overall > SRT_CSV_TOP || srtFamilyTargeted(r.asin, data.settings, data.products)) continue;
       const p = data.products[r.asin] || {};
       const bsr = p.bsr || [];
       const node = srtNodeRank(p);
       const brand = (p.brand || r.brand || '').trim();
-      const isOrg = r.type === 'organic';
-      lines.push([date, time, snap.marketplace, snap.keyword, snap.page, r.position,
-        isOrg ? r.rank : '', isOrg ? '' : r.rank,
-        isOrg && off ? off.org + r.rank : '', !isOrg && off ? off.sp + r.rank : '',
-        r.asin, brand, srtIsMine(r.asin, brand, data.settings) ? 'yes' : 'no',
-        (data.settings.competitors || []).includes(r.asin) ? 'yes' : 'no',
-        srtNotTargeted(r, brand, data.settings) ? 'Not targeted: add as product target' : '',
+      lines.push([date, time, snap.marketplace, snap.keyword, snap.page, r.position, r.rank, overall,
+        r.asin, p.parentAsin || '', brand, srtIsMine(r.asin, brand, data.settings) ? 'yes' : 'no',
+        srtNotTargeted(r, brand, data.settings, data.products) ? 'Not targeted: add as product target' : '',
         p.title || r.title, srtHighlights(p), (p.bullets || []).map((b) => `• ${b}`).join('\n'),
         node ? node.rank : '', node ? node.category : '', (p.breadcrumb || []).join(' › '),
         bsr.map((b) => `#${b.rank} in ${b.category}`).join(' | '),

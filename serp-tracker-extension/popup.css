@@ -69,3 +69,8 @@ tr.comp td{background:#fff1f0}
 .seg-ctl button:disabled{color:#afb8c1;cursor:default}
 .bname.mine{color:var(--purple);font-weight:600}
 input[type=text]{display:block;width:100%;margin-top:4px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;font:inherit}
+#otherBrands h4{margin:10px 0 4px}
+ul.others{list-style:none;margin:0;padding:0;columns:3;column-gap:16px;font-size:12px}
+ul.others li{display:flex;justify-content:space-between;gap:6px;break-inside:avoid;padding:1px 0;border-bottom:1px solid var(--soft)}
+ul.others .oname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ul.others .oval{color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
