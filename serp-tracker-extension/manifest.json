@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SERP Rank Tracker",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Tracks organic and sponsored ranks on Amazon search pages, brand share, untargeted competitors, and exports product details to CSV.",
   "permissions": [
     "storage",

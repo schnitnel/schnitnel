@@ -25,6 +25,8 @@ async function load() {
     products: s.products || {},
     settings: { ...DEFAULTS, ...(s.settings || {}) },
   };
+  knownBrands = [...new Set(Object.values(state.products).map((p) => clean(p.brand)).filter((b) => b.length >= 3))]
+    .sort((a, b) => b.length - a.length);
 }
 
 function flash(msg, isErr) {
@@ -58,7 +60,14 @@ function fillTable(table, headers, rows) {
 }
 
 // ---------- shared lookups ----------
-const brandOf = (r) => clean((state.products[r.asin] || {}).brand || r.brand);
+// Brand from the product page or search card; otherwise a known brand the title starts with
+// (e.g. "Hallmark Birthday Cards…"), so ads outside the top 40 still get a brand.
+let knownBrands = [];
+const brandFromTitle = (title) => {
+  const t = clean(title).toLowerCase();
+  return knownBrands.find((b) => t.startsWith(b.toLowerCase() + ' ')) || '';
+};
+const brandOf = (r) => clean((state.products[r.asin] || {}).brand || r.brand) || brandFromTitle(titleOf(r));
 const titleOf = (r) => (state.products[r.asin] || {}).title || r.title;
 const isMine = (r) => srtIsMine(r.asin, brandOf(r), state.settings);
 const notTargeted = (r) => srtNotTargeted(r, brandOf(r), state.settings, state.products);

@@ -167,7 +167,18 @@
 
   function parseProductPage(doc) {
     const byline = clean(doc.querySelector('#bylineInfo')?.textContent);
-    const brand = byline.replace(/^Visit the\s+/i, '').replace(/\s+Store$/i, '').replace(/^Brand:\s*/i, '');
+    let brand = byline.replace(/^Visit the\s+/i, '').replace(/\s+Store$/i, '').replace(/^Brand:\s*/i, '');
+    if (!brand) {
+      // Some pages show the brand only in the product details tables.
+      for (const tr of doc.querySelectorAll('#productOverview_feature_div tr, #productDetails_techSpec_section_1 tr, #productDetails_detailBullets_sections1 tr')) {
+        const cells = [...tr.querySelectorAll('th, td')].map((c) => clean(c.textContent));
+        if (cells.length >= 2 && /^Brand( Name)?$/i.test(cells[0])) { brand = cells[1]; break; }
+      }
+      if (!brand) {
+        const li = leafTexts(doc, '#detailBullets_feature_div li span').join('\n').match(/Brand\s*[:\u200f\u200e]+\s*\n?([^\n]+)/i);
+        brand = li ? li[1] : '';
+      }
+    }
     const bullets = leafTexts(doc, '#feature-bullets li span.a-list-item, #productFactsDesktopExpander li span.a-list-item')
       .filter((t) => t && !/^Make sure this fits/i.test(t));
     let description = clean(doc.querySelector('#productDescription')?.textContent);
@@ -357,13 +368,14 @@
         if (p < pages) await politeDelay();
       }
       let fetched = 0;
+      let skipped = 0;
       if (withDetails && saved.length) {
         const { products } = await getAll();
         // Only the top 40 organic ASINs (the ones the CSV lists), in rank order. Details are reused
         // for 7 days; records saved without a title (blocked reads) are read again.
         const topOrganic = [...new Set(saved.flatMap((s) => s.results.filter((r) => r.data.type === 'organic').map((r) => r.data.asin)))]
           .slice(0, SRT_CSV_TOP);
-        const wanted = topOrganic.filter((a) => !products[a] || !products[a].title || products[a].v !== DETAIL_VERSION
+        const wanted = topOrganic.filter((a) => !products[a] || !products[a].title || !products[a].brand || products[a].v !== DETAIL_VERSION
           || Date.now() - products[a].fetchedAt > DETAIL_MAX_AGE_MS);
         let emptyStreak = 0;
         for (const [i, asin] of wanted.entries()) {
@@ -372,6 +384,7 @@
           const doc = await fetchDoc(`${base.origin}/dp/${asin}`);
           // A page without a product title is a throttled or error page: never save it over good details.
           if (!doc.querySelector('#productTitle')) {
+            skipped++;
             if (++emptyStreak >= 3) throw new Error('Amazon stopped sending product pages (rate limit). Wait 10-15 minutes and scan again; details already read are kept.');
             continue;
           }
@@ -383,7 +396,8 @@
         }
       }
       const msg = `Saved ${saved.length} page${saved.length === 1 ? '' : 's'} for "${keyword}"` +
-        (withDetails ? `, read ${fetched} product page${fetched === 1 ? '' : 's'}.` : '.');
+        (withDetails ? `, read ${fetched} product page${fetched === 1 ? '' : 's'}.` : '.') +
+        (skipped ? ` ${skipped} came back empty from Amazon and were skipped; scan again in 10-15 minutes to fill them.` : '');
       setPanel([[msg], ['Open the extension for brand share and top 30.', true]], { text: 'Download CSV', onClick: download });
       return { ok: true, message: msg };
     } catch (e) {
