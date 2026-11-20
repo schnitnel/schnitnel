@@ -1,4 +1,4 @@
-SERP Rank Tracker for Amazon - Chrome extension
+SERP Rank Tracker - Chrome extension
 
 INSTALL
 1. Unzip this folder somewhere you will keep it (Chrome loads it from there).
