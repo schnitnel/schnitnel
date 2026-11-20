@@ -12,13 +12,16 @@ USE
   then Save settings. Your ASINs are highlighted purple on Amazon search pages
   and product pages (the whole page when it is yours, and your product cards in
   carousels like "Products related to this item").
+- Brands of sponsored results and organic results below #40 come from earlier scans
+  or the search page itself, so some may show as "No brand found".
 - Search Amazon normally. Each result gets a label (Org #3 / Ad #1). Nothing is
   saved until you scan.
 - On a search page, click the toolbar icon -> "Scan pages 1-3 + details". It reads
-  pages 1-3 and each product page (brand, title, the highlights line under the
+  pages 1-3, then the product pages of the top 40 organic ASINs (brand, title, the
+  highlights line under the
   title, bullets, BSR and browse node, rating, review count, review summary and
   top 5 reviews),
-  one request every 2.5-5 s. About 5-10 minutes for a new keyword; product details
+  one request every 2.5-5 s. About 3 minutes for a new keyword; product details
   are reused for 7 days. Keep the tab open. When it finishes, click "Download CSV"
   in the box on the Amazon page for that scan's results. If Amazon shows a captcha
   it stops; solve it on any Amazon page and scan again.

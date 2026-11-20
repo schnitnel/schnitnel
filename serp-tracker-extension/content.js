@@ -133,11 +133,11 @@
   }
 
   // ---------- product page parsing ----------
-  // The grey line Amazon shows under the title (before "Visit the X Store").
-  // shortcut: reads text between #productTitle and #bylineInfo; if Amazon moves the byline, this returns ''.
+  // The grey line Amazon shows under the title (before "Visit the X Store", or the stars when there is no store link).
+  // shortcut: reads text between #productTitle and the byline/stars; if Amazon moves both, this returns ''.
   function highlightsOf(doc) {
     const title = doc.querySelector('#productTitle');
-    const stop = doc.querySelector('#bylineInfo');
+    const stop = doc.querySelector('#bylineInfo') || doc.querySelector('#averageCustomerReviews_feature_div, #averageCustomerReviews');
     if (!title || !stop) return '';
     const parts = [];
     const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
@@ -329,7 +329,7 @@
     try { chrome.runtime.sendMessage({ type: 'captured', myBestOrganic: myBest ? myBest.data.rank : null }); } catch (e) { /* no listener */ }
   }
 
-  // Fetches search pages 1..pages for this keyword, then the product page of every ASIN on them. One request every 2.5-5 s, stops on a captcha.
+  // Fetches search pages 1..pages for this keyword, then the product pages of the top 40 organic ASINs. One request every 2.5-5 s, stops on a captcha.
   async function scan(pages, withDetails) {
     const base = new URL(location.href);
     const keyword = normKeyword(base.searchParams.get('k') || '');
@@ -337,6 +337,12 @@
     injectStyles();
     const saved = [];
     const scanStart = Date.now();
+    const download = async () => {
+      const data = await getAll();
+      const rows = data.snapshots.filter((s) => s.ts >= scanStart && s.keyword === keyword);
+      const name = `amazon-serp-${keyword.replace(/[^a-z0-9]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.csv`;
+      srtDownloadCsv(srtBuildCsv(rows, data), name);
+    };
     try {
       for (let p = 1; p <= pages; p++) {
         setPanel([[`Scanning "${keyword}" page ${p} of ${pages}…`]]);
@@ -353,13 +359,23 @@
       let fetched = 0;
       if (withDetails && saved.length) {
         const { products } = await getAll();
-        // Page order, so a stopped scan still has page 1 complete. Details are reused for 7 days.
-        const wanted = [...new Set(saved.flatMap((s) => s.results.map((r) => r.data.asin)))]
-          .filter((a) => !products[a] || products[a].v !== DETAIL_VERSION || Date.now() - products[a].fetchedAt > DETAIL_MAX_AGE_MS);
+        // Only the top 40 organic ASINs (the ones the CSV lists), in rank order. Details are reused
+        // for 7 days; records saved without a title (blocked reads) are read again.
+        const topOrganic = [...new Set(saved.flatMap((s) => s.results.filter((r) => r.data.type === 'organic').map((r) => r.data.asin)))]
+          .slice(0, SRT_CSV_TOP);
+        const wanted = topOrganic.filter((a) => !products[a] || !products[a].title || products[a].v !== DETAIL_VERSION
+          || Date.now() - products[a].fetchedAt > DETAIL_MAX_AGE_MS);
+        let emptyStreak = 0;
         for (const [i, asin] of wanted.entries()) {
           setPanel([[`Reading product details ${i + 1} of ${wanted.length} (${asin})…`], ['Keep this tab open.', true]]);
           await politeDelay();
           const doc = await fetchDoc(`${base.origin}/dp/${asin}`);
+          // A page without a product title is a throttled or error page: never save it over good details.
+          if (!doc.querySelector('#productTitle')) {
+            if (++emptyStreak >= 3) throw new Error('Amazon stopped sending product pages (rate limit). Wait 10-15 minutes and scan again; details already read are kept.');
+            continue;
+          }
+          emptyStreak = 0;
           const { products: latest } = await getAll();
           latest[asin] = parseProductPage(doc);
           await chrome.storage.local.set({ products: latest });
@@ -368,16 +384,11 @@
       }
       const msg = `Saved ${saved.length} page${saved.length === 1 ? '' : 's'} for "${keyword}"` +
         (withDetails ? `, read ${fetched} product page${fetched === 1 ? '' : 's'}.` : '.');
-      const download = async () => {
-        const data = await getAll();
-        const rows = data.snapshots.filter((s) => s.ts >= scanStart && s.keyword === keyword);
-        const name = `amazon-serp-${keyword.replace(/[^a-z0-9]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.csv`;
-        srtDownloadCsv(srtBuildCsv(rows, data), name);
-      };
       setPanel([[msg], ['Open the extension for brand share and top 30.', true]], { text: 'Download CSV', onClick: download });
       return { ok: true, message: msg };
     } catch (e) {
-      setPanel([[`Stopped: ${e.message}`], [`${saved.length} page(s) were saved before it stopped.`, true]]);
+      setPanel([[`Stopped: ${e.message}`], [`${saved.length} page(s) were saved before it stopped.`, true]],
+        saved.length ? { text: 'Download CSV', onClick: download } : null);
       return { ok: false, reason: e.message };
     }
   }

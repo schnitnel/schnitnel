@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SERP Rank Tracker for Amazon",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Records which ASINs rank on the Amazon search pages you open, organic and sponsored, with brand share, competitor targeting flags and product page details.",
   "permissions": [
     "storage",
